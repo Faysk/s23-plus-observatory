@@ -1,5 +1,6 @@
 """API HTTP local-first. Sem operações remotas, upload ou CORS."""
 from __future__ import annotations
+import copy
 import json
 import mimetypes
 import threading
@@ -10,15 +11,17 @@ from urllib.parse import urlsplit, parse_qs
 
 from .collector import Collector, flatten
 from .storage import Storage, METRICS, RANGES
+from .catalog import catalog
 
 ROOT = Path(__file__).resolve().parent.parent
-STATIC = {'/': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css', '/favicon.svg': 'favicon.svg'}
+STATIC = {'/': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css', '/favicon.svg': 'favicon.svg', '/charts.js': 'charts.js'}
 
 
 class State:
     def __init__(self, collector: Collector, storage: Storage, interval: float):
         self.collector, self.storage, self.interval = collector, storage, interval
         self.snapshot = None
+        self.failures = 0
         self.updated_at = 0.0
         self.lock = threading.Lock()
         self.stop_event = threading.Event()
@@ -28,7 +31,8 @@ class State:
     def sample(self):
         data = self.collector.collect()
         epoch = time.time()
-        self.storage.record(epoch, flatten(data))
+        data.setdefault('diagnostics', {})['sampleIntervalSec'] = self.interval
+        self.storage.record(epoch, flatten(data), data)
         with self.lock:
             self.snapshot, self.updated_at, self.last_error = data, epoch, None
 
@@ -40,6 +44,7 @@ class State:
                 # Não imprimir detalhes do host ou variáveis de ambiente.
                 with self.lock:
                     self.last_error = type(ex).__name__
+                    self.failures += 1
             self.stop_event.wait(self.interval)
 
     def start(self):
@@ -74,6 +79,17 @@ def handler_factory(state: State):
         def do_GET(self):
             url = urlsplit(self.path)
             path = url.path
+            if path in ('/', '/s23'):
+                self.send_response(302)
+                self.send_header('Location', '/s23/')
+                self.send_header('Cache-Control', 'no-store')
+                self.send_header('Content-Length', '0')
+                self.end_headers()
+                return
+            if not path.startswith('/s23/'):
+                self.respond(404, {'error': 'rota não encontrada'})
+                return
+            path = path[len('/s23'):]
             if path == '/api/health':
                 with state.lock:
                     last = state.updated_at
@@ -84,19 +100,29 @@ def handler_factory(state: State):
                 return
             if path == '/api/host/snapshot':
                 with state.lock:
-                    snap = state.snapshot
+                    snap = copy.deepcopy(state.snapshot)
+                    updated = state.updated_at
+                    last_error = state.last_error
+                if snap:
+                    snap['ageSeconds'] = round(max(0, time.time()-updated),1)
+                    snap['quality'] = 'stale' if time.time()-updated > max(60, state.interval*2.5) else 'ok'
+                    snap.setdefault('diagnostics', {})['lastError'] = last_error
                 self.respond(200, snap) if snap else self.respond(503, {'error': 'Aguardando primeira amostra'})
                 return
             if path == '/api/host/catalog':
-                self.respond(200, {'ranges': list(RANGES), 'metrics': {
-                    'cpu': {'label': 'CPU', 'unit': '%'},
-                    'memory': {'label': 'Memória', 'unit': '%'},
-                    'battery': {'label': 'Bateria', 'unit': '%'},
-                    'temp': {'label': 'Temperatura da bateria', 'unit': '°C'},
-                    'rx': {'label': 'Recebimento', 'unit': 'Mb/s'},
-                    'tx': {'label': 'Envio', 'unit': 'Mb/s'},
-                    'storage': {'label': 'Armazenamento usado', 'unit': '%'},
-                }})
+                with state.lock:
+                    snap = state.snapshot
+                self.respond(200, {'ranges': list(RANGES), 'metrics': catalog(snap),
+                                   'sampleIntervalSec': state.interval, 'storage': state.storage.info()})
+                return
+            if path == '/api/host/archive':
+                query = parse_qs(url.query)
+                try:
+                    data = state.storage.archive(int(query.get('after', ['0'])[0]), int(query.get('limit', ['50'])[0]))
+                except ValueError:
+                    self.respond(400, {'error': 'cursor ou limite inválido'})
+                    return
+                self.respond(200, data)
                 return
             if path == '/api/host/history':
                 query = parse_qs(url.query)
@@ -106,7 +132,9 @@ def handler_factory(state: State):
                     self.respond(400, {'error': 'metric ou range inválido'})
                     return
                 self.respond(200, {'metric': metric, 'range': period,
-                                   'points': state.storage.history(metric, period)})
+                                   'points': state.storage.history(metric, period),
+                                   'summary': state.storage.summary(metric, period),
+                                   'sampleIntervalSec': state.interval})
                 return
             if path in STATIC:
                 fp = ROOT / 'web' / STATIC[path]
@@ -116,7 +144,7 @@ def handler_factory(state: State):
                 mime = mimetypes.guess_type(fp.name)[0] or 'application/octet-stream'
                 if mime.startswith('text/') or mime in ('image/svg+xml', 'application/javascript'):
                     mime += '; charset=utf-8'
-                self.respond(200, fp.read_bytes(), mime=mime, cache='public, max-age=3600' if path != '/' else 'no-store')
+                self.respond(200, fp.read_bytes(), mime=mime, cache='no-cache' if path != '/' else 'no-store')
                 return
             self.respond(404, {'error': 'rota não encontrada'})
 

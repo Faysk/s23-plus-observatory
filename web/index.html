@@ -5,16 +5,26 @@
 <meta name="theme-color" content="#09151c">
 <meta name="description" content="S23+ Observatory — telemetria local do Android via Termux">
 <title>S23+ Observatory · Faysk HomeLab</title>
-<link rel="icon" href="/favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="/style.css">
-<script src="/app.js" defer></script>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css?v=20261101-fluid-02">
+<script src="charts.js?v=20261101-fluid-02" defer></script>
+<script src="app.js?v=20261101-fluid-02" defer></script>
 </head>
-<body>
+<body data-workspace="s23">
+<a class="skip-link" href="#content-region">Pular para os dados</a>
 <div class="app">
   <aside class="sidebar">
     <div class="brand"><div class="logo">S<span>23</span></div><div><strong>OBSERVATORY</strong><small>ANDROID · HOMELAB</small></div></div>
-    <div class="device-label">DISPOSITIVO <span>01</span></div>
-    <div class="device-name"><span class="device-icon">▣</span><div><strong>Galaxy S23+</strong><small>Termux · ARM64</small></div></div>
+    <section class="workspace-picker" aria-label="Workspace">
+      <div class="device-label">WORKSPACE <span>05</span></div>
+      <details class="project-switch"><summary aria-label="Workspace: Galaxy S23+. Alterar dispositivo"><span class="project-icon">S23</span><span class="project-copy"><strong>Galaxy S23+</strong><small>Android · Termux · ARM64</small></span><span class="project-caret">⌄</span></summary><nav class="project-options" aria-label="Dispositivos e projetos">
+        <a href="http://192.168.1.2:8767/router/"><span class="project-icon">R</span><span class="project-copy"><strong>Router Huawei</strong><small>Monitor da rede</small></span></a>
+        <a href="http://192.168.1.2:8767/s7/"><span class="project-icon">S7</span><span class="project-copy"><strong>Galaxy S7 Edge</strong><small>Android · ARM64</small></span></a>
+        <a href="http://192.168.1.2:8767/valt/"><span class="project-icon">V</span><span class="project-copy"><strong>Docs Vault</strong><small>Arquivo documental</small></span></a>
+        <a href="http://192.168.1.3:8783/s23/" aria-current="page"><span class="project-icon">S23</span><span class="project-copy"><strong>Galaxy S23+</strong><small>Android · Termux · ARM64</small></span><span>✓</span></a>
+        <a href="https://ssh-br.faysk.dev/monitor"><span class="project-icon">A</span><span class="project-copy"><strong>Acer Brasil</strong><small>Windows + Ubuntu WSL</small></span></a>
+      </nav></details>
+    </section>
     <div class="nav-title">MONITORAMENTO</div>
     <nav aria-label="Navegação principal" id="nav">
       <button type="button" data-page="overview" class="active">◈ <span>Visão geral</span></button>
@@ -22,16 +32,18 @@
       <button type="button" data-page="battery">⚡ <span>Bateria e energia</span></button>
       <button type="button" data-page="network">⇄ <span>Rede</span></button>
       <button type="button" data-page="storage">▤ <span>Armazenamento</span></button>
+      <button type="button" data-page="explorer">⊞ <span>Explorar leituras</span></button>
       <button type="button" data-page="system">⚙ <span>Sistema e fontes</span></button>
     </nav>
-    <div class="aside-end"><div class="state-chip"><span class="dot" id="sidebar-dot"></span><span id="sidebar-label">Aguardando telemetria</span></div><p>Somente leitura · Local-first</p><small>v0.1 · S23+ Observatory</small></div>
+    <div class="aside-end"><div class="state-chip"><span class="dot" id="sidebar-dot"></span><span id="sidebar-label">Aguardando telemetria</span></div><p>Somente leitura · Local-first</p><small>v0.2 · S23+ Observatory</small></div>
   </aside>
   <main class="main">
     <div class="topbar"><div class="crumb">HomeLab <span>/</span> Galaxy S23+ <span>/</span> <b id="crumb-page">Visão geral</b></div><div class="top-actions"><span id="clock">--:--:--</span><button id="theme-button" type="button" aria-label="Alternar tema">☾</button></div></div>
     <div class="content">
-      <header class="headline"><div><div class="eyebrow">S23+ OBSERVATORY <span class="eyebrow-line"></span> LIVE TELEMETRY</div><h1 id="page-title">Visão geral</h1><p id="page-description">Saúde e desempenho do seu dispositivo em um só lugar.</p></div><div class="header-buttons"><span class="live-state" id="live-state"><span class="dot"></span> Aguardando</span><button id="refresh" type="button" class="button primary">↻ Atualizar</button></div></header>
+      <header class="headline"><div><div class="eyebrow">S23+ OBSERVATORY <span class="eyebrow-line"></span> LIVE TELEMETRY</div><h1 id="page-title">Visão geral</h1><p id="page-description">Saúde e desempenho do seu dispositivo em um só lugar.</p></div><div class="header-buttons"><span class="live-state" id="live-state"><span class="dot"></span> Aguardando</span><button id="pause" type="button" class="button" aria-pressed="false">Pausar</button><button id="refresh" type="button" class="button primary">↻ Atualizar</button></div></header>
       <div id="warning" role="status" class="warning" hidden></div>
-      <div id="content-region" aria-live="off"><div class="empty">Aguardando a primeira amostra do dispositivo…</div></div>
+      <div class="data-toolbar"><span id="sample-note">Coleta local · sem root</span><button id="export" class="text-button" type="button">↓ JSON da amostra</button></div>
+      <div id="content-region" tabindex="-1" aria-live="off"><div class="empty">Aguardando a primeira amostra do dispositivo…</div></div>
     </div>
     <footer><span>Faysk HomeLab · Dados do próprio dispositivo</span><span id="updated">Sem leituras recebidas</span></footer>
   </main>

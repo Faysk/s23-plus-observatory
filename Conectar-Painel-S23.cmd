@@ -9,7 +9,7 @@ if "%S23_HOST%"=="" goto :missing
 if "%S23_USER%"=="" goto :missing
 echo.
 echo  SSH: %S23_USER%@%S23_HOST%:%S23_SSH_PORT%
-echo  Painel: http://127.0.0.1:8783
+echo  Painel: http://127.0.0.1:8783/s23/
 echo  Mantenha a janela aberta. Ctrl+C encerra o tunel.
 echo.
 ssh -o ExitOnForwardFailure=yes -p %S23_SSH_PORT% -L 8783:127.0.0.1:8783 -N %S23_USER%@%S23_HOST%

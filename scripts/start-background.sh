@@ -3,12 +3,25 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 STATE="$HOME/.local/state/s23-observatory"
 mkdir -p "$STATE"
+exec 9>"$STATE/start.lock"
+if ! flock -n 9; then
+  echo 'Inicialização já está em andamento.'
+  exit 0
+fi
 PIDFILE="$STATE/server.pid"
-if curl -fsS --max-time 2 http://127.0.0.1:8783/api/health >/dev/null; then
+if [ -s "$PIDFILE" ]; then
+  PID="$(cat "$PIDFILE")"
+  case "$PID" in ''|*[!0-9]*) ;; *)
+    if kill -0 "$PID" 2>/dev/null && [ "$(readlink "/proc/$PID/cwd" 2>/dev/null || true)" = "$PWD" ]; then
+      CMDLINE="$(tr '\0' ' ' < "/proc/$PID/cmdline" 2>/dev/null || true)"
+      case "$CMDLINE" in *'python'*'run.py'*'8783'*) echo 'Processo do Observatory já está ativo.'; exit 0;; esac
+    fi;; esac
+fi
+if curl -fsS --max-time 2 http://127.0.0.1:8783/s23/api/health >/dev/null; then
   echo 'Observatory já está respondendo em localhost:8783'
   exit 0
 fi
-nohup python run.py --bind 127.0.0.1 --port 8783 --interval 30 > "$STATE/server.log" 2>&1 < /dev/null &
+nohup python run.py --bind 127.0.0.1 --port 8783 --interval 30 "$@" 9>&- > "$STATE/server.log" 2>&1 < /dev/null &
 PID=$!
 echo "$PID" > "$PIDFILE"
 sleep 2
