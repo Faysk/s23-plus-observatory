@@ -73,6 +73,7 @@
     };
     svg.addEventListener('pointermove',select);
     svg.addEventListener('pointerdown',select);
+    svg.addEventListener('click',()=>{svg.focus({preventScroll:true});inspect(host,record.index);});
     svg.addEventListener('pointerleave',()=>{if(document.activeElement!==svg)hide(host);});
     svg.addEventListener('blur',()=>hide(host));
     svg.addEventListener('focus',()=>inspect(host,record.index));
