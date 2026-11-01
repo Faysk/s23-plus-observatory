@@ -68,6 +68,11 @@ O observatório funciona **sem** esse plugin, mas a bateria pode aparecer como i
 
 ## 4. Iniciar automaticamente no boot (opcional)
 
+**Configuração realizada no S23 em 01/11/2026:** Termux:Boot F-Droid compatível,
+retomada de SSH/painel, wake lock e atalho **Ativar monitor S23** no PC.
+Após reiniciar o Android, desbloqueie e use o atalho por USB para reativar os
+sensores. Consulte [boot, atalho e desativação](docs/BOOT-AND-USB.md).
+
 Para um telefone principal, considere o consumo de bateria e as restrições do Android. Instale **Termux:Boot pelo F-Droid**, abra o aplicativo uma vez, e então:
 
 ```bash

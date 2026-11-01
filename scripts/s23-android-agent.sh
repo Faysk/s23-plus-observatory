@@ -3,22 +3,42 @@
 DATA=/sdcard/Download/s23-observatory-agent
 SCRIPT=/data/local/tmp/s23-android-agent.sh
 PIDFILE=/data/local/tmp/s23-android-agent.pid
-if [ "$1" = --start ]; then
-    if [ -r "$PIDFILE" ]; then
-        read -r pid < "$PIDFILE"
-        case "$pid" in ''|*[!0-9]*) ;; *)
-            if kill -0 "$pid" 2>/dev/null && grep -F -q "$SCRIPT" "/proc/$pid/cmdline"; then
-                echo AGENT_ALREADY_ACTIVE; exit 0
-            fi;; esac
+LOCK=/data/local/tmp/s23-android-agent.lock
+active() {
+    [ -r "$PIDFILE" ] || return 1
+    read -r pid < "$PIDFILE"
+    case "$pid" in ''|*[!0-9]*) return 1;; esac
+    kill -0 "$pid" 2>/dev/null && grep -F -q "$SCRIPT" "/proc/$pid/cmdline" 2>/dev/null
+}
+if [ "$1" = --status ]; then
+    if active; then echo AGENT_ACTIVE; exit 0; else echo AGENT_STOPPED; exit 3; fi
+fi
+if [ "$1" = --stop ]; then
+    if active; then
+        kill "$pid"
+        for attempt in 1 2 3 4 5 6 7 8; do active || { echo AGENT_STOPPED; exit 0; }; sleep 1; done
+        echo ERROR_STOP_TIMEOUT; exit 6
     fi
+    echo AGENT_STOPPED; exit 0
+fi
+if [ "$1" = --start ]; then
+    if active; then echo AGENT_ALREADY_ACTIVE; exit 0; fi
     /system/bin/toybox nohup /system/bin/setsid /system/bin/sh "$SCRIPT" --run </dev/null >/dev/null 2>&1 &
-    exit 0
+    for attempt in 1 2 3 4 5; do sleep 1; if active; then echo AGENT_STARTED; exit 0; fi; done
+    echo ERROR_START_TIMEOUT; exit 5
 fi
 [ "$1" = --run ] || exit 2
+if ! mkdir "$LOCK" 2>/dev/null; then
+    if active; then exit 0; fi
+    rmdir "$LOCK" 2>/dev/null || exit 7
+    mkdir "$LOCK" 2>/dev/null || exit 7
+fi
 echo "$$" > "$PIDFILE"
 mkdir -p "$DATA" || exit 3
 TMP="$DATA/.sample-$$"
-trap 'rm -f "$TMP" "$PIDFILE"; exit' TERM INT HUP
+cleanup() { rm -f "$TMP" "$PIDFILE"; rmdir "$LOCK" 2>/dev/null; }
+trap 'exit 0' TERM INT HUP
+trap cleanup EXIT
 while :; do
     read -r nonce < "$DATA/request" 2>/dev/null
     case "$nonce" in ''|*[!0-9a-f]*) sleep 5; continue;; esac
