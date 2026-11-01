@@ -11,5 +11,5 @@ else
   echo 'termux-api (pacote) não instalado; bateria pode usar sysfs.'
 fi
 echo 'Snapshot: '
-if command -v curl >/dev/null; then curl -fsS --max-time 3 http://127.0.0.1:8783/api/health || true; fi
+if command -v curl >/dev/null; then curl -fsS --max-time 3 http://127.0.0.1:8783/s23/api/health || true; fi
 printf '\nFim. Não contém SSID, localização, números de série nem chaves.\n'

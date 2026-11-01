@@ -1,155 +1,174 @@
+/* S23 Observatory v0.2 — original local-first UI, no external resources. */
 (() => {
   'use strict';
-  const $ = (s) => document.querySelector(s);
-  const esc = (v) => String(v ?? '—').replace(/[&<>"']/g, (x) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[x]));
-  const fmt = (v, dec=1) => (typeof v === 'number' && Number.isFinite(v)) ? v.toLocaleString('pt-BR',{maximumFractionDigits:dec,minimumFractionDigits:dec}) : 'Indisponível';
-  const dateFmt = (s) => { const d=new Date(s); return Number.isNaN(d.getTime())?'—':d.toLocaleString('pt-BR'); };
-  const units = {cpu:'%',memory:'%',battery:'%',temp:'°C',rx:'Mb/s',tx:'Mb/s',storage:'%'};
-  const title = {overview:'Visão geral',performance:'Desempenho',battery:'Bateria e energia',network:'Rede',storage:'Armazenamento',system:'Sistema e fontes'};
-  const description = {overview:'Saúde e desempenho do seu dispositivo em um só lugar.',performance:'Uso de CPU e memória em amostras reais.',battery:'Capacidade e temperatura da bateria.',network:'Tráfego de rede, quando acessível sem root.',storage:'Uso do volume acessível pelo Termux.',system:'Estado da coleta, serviços e disponibilidade das fontes.'};
-  const labels={cpu:'CPU',memory:'Memória',battery:'Bateria',temp:'Temperatura',rx:'Recebimento',tx:'Envio',storage:'Armazenamento'};
-  const ranges=['1h','6h','12h','24h','7d','30d','90d'];
-  const s={page:'overview',range:'24h',snapshot:null,history:new Map(),requestId:0,lastError:null,paused:false};
-  try{s.range=localStorage.getItem('s23_range')||'24h'; if(!ranges.includes(s.range))s.range='24h'; if(localStorage.getItem('s23_theme')==='light')document.body.classList.add('light');}catch{}
-  const chartMetricKeys={overview:['cpu','battery'],performance:['cpu','memory'],battery:['battery','temp'],network:['rx','tx'],storage:['storage'],system:[]};
-  function pct(v){return v==null?'Indisponível':fmt(v)+'%';}
-  function metricCard(label,value,unit,meta,icon,bar=null){
-    const available=value!=null && Number.isFinite(Number(value));
-    return `<article class="card"><div class="metric-label"><span>${esc(label)}</span><span class="metric-icon" aria-hidden="true">${icon}</span></div><div class="metric-value ${available?'':'missing'}">${available?fmt(Number(value)):'Indisponível'} ${available?`<small>${esc(unit)}</small>`:''}</div><div class="metric-meta">${esc(meta)}</div><progress class="progress" max="100" value="${bar==null?0:Math.max(0,Math.min(100,bar))}" aria-hidden="true"></progress></article>`;
+  const $=s=>document.querySelector(s);
+  const esc=v=>String(v??'—').replace(/[&<>"']/g,x=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[x]));
+  const fmt=(v,d=1)=>typeof v==='number'&&Number.isFinite(v)?v.toLocaleString('pt-BR',{maximumFractionDigits:d}):'Sem dados';
+  const val=(v,u='',d=1)=>v==null?'Sem dados':fmt(v,d)+(u?' '+u:'');
+  const date=t=>new Date(t).toLocaleString('pt-BR');
+  const duration=t=>t==null?'Sem dados':`${Math.floor(t/86400)}d ${Math.floor(t%86400/3600)}h ${Math.floor(t%3600/60)}min`;
+  const save=(k,v)=>{try{localStorage.setItem('s23_'+k,v);}catch{}};
+  const read=(k,f)=>{try{return localStorage.getItem('s23_'+k)??f;}catch{return f;}};
+  const ranges={'1h':3600,'6h':21600,'12h':43200,'24h':86400,'7d':604800,'30d':2592000,'90d':7776000};
+  const pages={overview:['Visão geral','O estado do Galaxy S23+, dos sensores ao histórico.'],performance:['Desempenho','CPU por núcleo, frequências e memória do sistema.'],battery:['Bateria e energia','Carga, temperatura e tensão com a origem da leitura.'],network:['Rede','Tráfego observado e qualidade do link Wi-Fi são medidas diferentes.'],storage:['Armazenamento','Capacidade e espaço disponível no volume acessível pelo Termux.'],explorer:['Explorar leituras','Catálogo pesquisável: valor, unidade e origem de cada métrica.'],system:['Sistema e fontes','Saúde do coletor, atualização das fontes e persistência local.']};
+  const metrics={overview:['cpu','memory','rx','tx'],performance:['cpu','memory','frequency','swap'],battery:['battery','temp','voltage'],network:['rx','tx','signal','linkRx'],storage:['storage','storageFree'],system:['processCpu','processMemory','collection'],explorer:[]};
+  const labels={cpu:'CPU global',memory:'RAM utilizada',rx:'Recebimento',tx:'Envio',battery:'Nível da bateria',temp:'Temperatura da bateria',voltage:'Tensão',frequency:'Frequência observada',swap:'Swap utilizada',signal:'Sinal Wi-Fi',linkRx:'Link Wi-Fi RX',storage:'Volume ocupado',storageFree:'Espaço disponível',processCpu:'CPU do coletor',processMemory:'Memória do coletor',collection:'Tempo de coleta'};
+  const units={cpu:'%',memory:'%',rx:'Mb/s',tx:'Mb/s',battery:'%',temp:'°C',voltage:'mV',frequency:'MHz',swap:'MiB',signal:'dBm',linkRx:'Mb/s',storage:'%',storageFree:'GB',processCpu:'%',processMemory:'MiB',collection:'ms'};
+  const s={page:'overview',range:read('range','1h'),fit:read('fit','true')!=='false',snapshot:null,catalog:null,paused:false,error:null,query:'',group:'all',limit:24,generation:0};
+  if(!ranges[s.range])s.range='1h';
+  const cache=new Map(),flights=new Map();let refreshing=false;
+  if(read('theme','dark')==='light')document.body.classList.add('light');
+  const translations={FULL:'Carga completa',CHARGING:'Carregando',DISCHARGING:'Descarregando',NOT_CHARGING:'Sem carregar',GOOD:'Boa (Android)',USB:'USB',AC:'Tomada',WIRELESS:'Sem fio',UNPLUGGED:'Bateria',UNKNOWN:'Não informado'};
+  const translated=v=>translations[v]||v||'Sem dados';
+  const row=(name,v)=>`<div class="row-data"><span>${esc(name)}</span><strong>${esc(v)}</strong></div>`;
+  const box=(name,body)=>`<article class="card detail-card"><h3>${esc(name)}</h3>${body}</article>`;
+  const group=(name,body,note='')=>`<div class="section-title"><h2>${esc(name)}</h2><small>${esc(note)}</small></div>${body}`;
+  function card(name,v,unit,meta,goto,tone='mint',percent=null) {
+    return `<button type="button" class="card metric-card tone-${tone}" data-goto="${goto}"><span class="metric-label">${esc(name)}<span aria-hidden="true">↗</span></span><span class="metric-value ${v==null?'missing':''}">${v==null?'Sem dados':esc(fmt(v,unit==='Mb/s'?4:1))}${v==null?'':` <small>${esc(unit)}</small>`}</span><span class="metric-meta">${esc(meta)}</span>${percent==null?'':`<progress class="progress" max="100" value="${Math.max(0,Math.min(100,percent))}" aria-label="${esc(name)}"></progress>`}</button>`;
   }
-  function groupHead(text,more=''){return `<div class="section-title"><h2>${esc(text)}</h2><small>${esc(more)}</small></div>`;}
-  function row(label,value){return `<div class="row-data"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`;}
-  function box(heading,content){return `<article class="card"><h3>${esc(heading)}</h3>${content}</article>`;}
-  function chartShell(metric){return `<div class="card chart-card"><div class="chart-head"><div><h3>${esc(labels[metric])}</h3><p>Histórico real · ${esc(s.range)}</p></div><div class="last-value" id="last-${metric}">—</div></div><div class="chart" id="plot-${metric}"><div class="chart-empty">Carregando histórico…</div></div></div>`;}
-  function picker(){return `<div class="range-picker" aria-label="Período do histórico">${ranges.map(r=>`<button type="button" data-range="${r}" class="${r===s.range?'selected':''}" aria-pressed="${r===s.range}">${r}</button>`).join('')}</div>`;}
-  function charts(){const keys=chartMetricKeys[s.page];return keys.length?`${groupHead('Histórico de métricas')}<div class="section-title chart-toolbar"><small>Sem interpolação ou valores simulados</small>${picker()}</div><div class="chart-grid">${keys.map(chartShell).join('')}</div>`:'';}
-  function render(){
-    const d=s.snapshot, root=$('#content-region');
-    if(!d){root.innerHTML='<div class="empty">Sem amostras reais. Verifique o coletor no Termux.</div>';return;}
+  function snapshotView() {
+    const d=s.snapshot;if(!d)return '<div class="empty">Aguardando uma amostra válida do dispositivo.</div>';
+    const c=d.cpu,m=d.memory,b=d.battery,n=d.network,disk=d.storage[0],diag=d.diagnostics||{},mon=d.monitor||{};
+    const memPct=m.usedPercent??(m.usedMB!=null&&m.totalMB?m.usedMB/m.totalMB*100:null);
     let html='';
-    const c=d.cpu||{},m=d.memory||{},b=d.battery||{},n=d.network||{},disk=d.storage?.[0]||{};
-    const memoryPct=m.totalMB>0&&m.usedMB!=null?m.usedMB/m.totalMB*100:null;
-    if(s.page==='overview'||s.page==='performance'){
-      html+=`<div class="stats-grid">${metricCard('CPU',c.usagePercent,'%','Uso global','⌁',c.usagePercent)}${metricCard('Memória',memoryPct,'%','RAM utilizada','▤',memoryPct)}${metricCard('Bateria',b.levelPercent,'%','Carga atual','⚡',b.levelPercent)}${metricCard('Armazenamento',disk.usedPercent,'%','Volume do Termux','◫',disk.usedPercent)}</div>`;
-    } else if(s.page==='battery'){
-      html+=`<div class="stats-grid">${metricCard('Bateria',b.levelPercent,'%','Capacidade atual','⚡',b.levelPercent)}${metricCard('Temperatura',b.temperatureC,'°C','Sensor da bateria','♨')}${metricCard('Memória',memoryPct,'%','RAM usada','▤',memoryPct)}${metricCard('Armazenamento',disk.usedPercent,'%','Volume do Termux','◫',disk.usedPercent)}</div>`;
-    } else if(s.page==='network'){
-      html+=`<div class="stats-grid">${metricCard('Download',n.rxMbps,'Mb/s','Taxa observada, não velocidade do plano','↓')}${metricCard('Upload',n.txMbps,'Mb/s','Taxa observada, não velocidade do plano','↑')}</div>`;
-    } else if(s.page==='storage'){
-      html+=`<div class="stats-grid">${metricCard('Ocupação',disk.usedPercent,'%','Volume do Termux','◫',disk.usedPercent)}${metricCard('Utilizado',disk.usedGB,'GB','Decimal (1 GB = 10⁹ bytes)','▣')}${metricCard('Disponível',disk.availableGB,'GB','Espaço disponível ao processo','◉')}</div>`;
+    if(s.page==='overview') {
+      html=`<div class="hero-strip"><div><span class="eyebrow">GALAXY S23+</span><strong>${esc(d.device.model)} <span>· ${esc(d.device.os)}</span></strong></div><div><small>Tempo ligado</small><b>${duration(d.device.uptimeSec)}</b></div><div><small>Fontes disponíveis</small><b>${Object.values(d.availability).filter(Boolean).length} / ${Object.keys(d.availability).length}</b></div><div><small>Cadência de coleta</small><b>${diag.sampleIntervalSec??30} segundos</b></div></div>`;
+      html+='<div class="stats-grid">'+card('CPU global',c.usagePercent,'%','Janela '+val(diag.cpuWindowSec,'s'), 'performance','mint',c.usagePercent)+card('Memória RAM',memPct,'%',val(m.availableMB,'MiB')+' disponíveis','performance','blue',memPct)+card('Bateria',b.levelPercent,'%',translated(b.status),'battery','violet',b.levelPercent)+card('Temperatura',b.temperatureC,'°C','Sensor da bateria','battery','amber')+card('Recebimento',n.rxMbps,'Mb/s','Interface '+(n.interface??'indisponível'),'network','blue')+card('Armazenamento',disk.usedPercent,'%',val(disk.availableGB,'GB')+' disponíveis','storage','mint',disk.usedPercent)+'</div>';
+      const notices=[];
+      if(memPct>=85)notices.push('RAM acima de 85% nesta amostra. O Android gerencia cache e processos em segundo plano.');
+      if(b.temperatureC>=40)notices.push('Bateria a '+val(b.temperatureC,'°C')+'. Referência de atenção do painel: 40 °C.');
+      if(disk.usedPercent>=90)notices.push('Volume com 90% ou mais de ocupação.');
+      if(!d.availability.cpu)notices.push('CPU sem amostra válida: confira o agente Android na seção Sistema.');
+      if(notices.length)html+='<div class="observations">'+notices.map(x=>'<p>◌ '+esc(x)+'</p>').join('')+'</div>';
     }
-    html+=charts();
-    if(s.page==='overview'||s.page==='system'){
-      html+=groupHead('Dispositivo e serviços');
-      html+=`<div class="detail-grid">${box('Identificação',row('Modelo',d.device?.model||'Indisponível')+row('Sistema',d.device?.os||'Indisponível')+row('Arquitetura',d.device?.architecture||'Indisponível')+row('Origem','Termux / Android'))}${box('Estado da coleta',row('Última amostra',dateFmt(d.timestamp))+row('SSH · porta 8022',d.services?.find(x=>x.id==='ssh')?.status||'Indisponível')+row('Fonte bateria',b.source||'Indisponível')+row('CPU',d.diagnostics?.cpuSource||'Indisponível'))}</div>`;
+    if(s.page==='performance') {
+      html='<div class="stats-grid">'+card('CPU global',c.usagePercent,'%','Delta dos contadores do sistema','performance','mint',c.usagePercent)+card('Frequência observada',c.frequencyMHz,'MHz','Maior leitura atual entre os núcleos','performance','blue')+card('RAM disponível',m.availableMB,'MiB','MemAvailable do kernel','performance','violet')+card('Swap em uso',m.swapUsedMB,'MiB','Capacidade '+val(m.swapMB,'MiB'),'performance','amber')+'</div>';
+      html+=group('Atividade por núcleo',`<div class="core-grid">${Array.from({length:Math.max(8,c.coresPercent?.length||0)},(_,i)=>`<article class="core-card"><div><span>CPU ${i}</span><strong>${val(c.coresPercent?.[i],'%')}</strong></div>${c.coresPercent?.[i]==null?'<small>Sem leitura do núcleo</small>':`<progress max="100" value="${c.coresPercent[i]}" aria-label="CPU ${i}"></progress>`}<small>${val(c.coresFrequencyMHz?.[i],'MHz',0)}</small></article>`).join('')}</div>`,'CPU do chipset: temperatura não homologada');
+      html+=group('Memória e carga',`<div class="detail-grid">${box('RAM do Android',row('Total',val(m.totalMB,'MiB'))+row('Usada',val(m.usedMB,'MiB'))+row('Disponível',val(m.availableMB,'MiB'))+row('Cache',val(m.cachedMB,'MiB'))+row('Buffers',val(m.buffersMB,'MiB'))+row('Slab',val(m.slabMB,'MiB')))}${box('Carga e memória virtual',row('Carga · 1 minuto',val(c.loadAverage?.[0]))+row('Carga · 5 minutos',val(c.loadAverage?.[1]))+row('Carga · 15 minutos',val(c.loadAverage?.[2]))+row('Swap total',val(m.swapMB,'MiB'))+row('Swap usada',val(m.swapUsedMB,'MiB'))+row('Swap livre',val(m.swapFreeMB,'MiB')))}</div>`,'Cache, slab e RAM usada podem se sobrepor; não somar.');
     }
-    if(s.page==='performance'){
-      html+=groupHead('Memória do sistema');html+=`<div class="detail-grid">${box('RAM',row('Total',m.totalMB==null?'Indisponível':fmt(m.totalMB)+' MB')+row('Usada',m.usedMB==null?'Indisponível':fmt(m.usedMB)+' MB')+row('Disponível',m.availableMB==null?'Indisponível':fmt(m.availableMB)+' MB'))}${box('CPU',row('Uso global',pct(c.usagePercent))+row('Núcleos com leitura',Array.isArray(c.coresPercent)?c.coresPercent.filter(x=>x!=null).length+' de '+c.coresPercent.length:'Indisponível')+row('Temperatura da CPU','Não validada / indisponível'))}</div>`;
-    }
-    if(s.page==='battery'){
-      html+=groupHead('Detalhes da bateria');html+=`<div class="detail-grid">${box('Energia',row('Estado',b.status||'Indisponível')+row('Alimentação',b.plugged||'Indisponível')+row('Saúde informada',b.health||'Indisponível'))}${box('Sensor',row('Fonte',b.source||'Indisponível')+row('Temperatura',b.temperatureC==null?'Indisponível':fmt(b.temperatureC)+' °C')+row('Nível',pct(b.levelPercent)))}</div>`;
-    }
-    if(s.page==='network'){
-      html+=groupHead('Interface');html+=`<div class="detail-grid">${box('Tráfego',row('Interface',n.interface||'Indisponível')+row('Contadores',d.diagnostics?.networkSource||'Indisponível')+row('Recebido',n.rxMbps==null?'Indisponível':fmt(n.rxMbps,4)+' Mb/s')+row('Enviado',n.txMbps==null?'Indisponível':fmt(n.txMbps,4)+' Mb/s'))}${box('Privacidade',row('SSID / rede Wi-Fi','Não coletado')+row('Localização','Não coletada')+row('Endereço IP','Não divulgado pela API'))}</div>`;
-    }
-    if(s.page==='storage'){
-      html+=groupHead('Filesystem');html+=`<div class="detail-grid">${box('Volume acessível',row('Volume',disk.label||'Indisponível')+row('Total',disk.totalGB==null?'Indisponível':fmt(disk.totalGB,2)+' GB')+row('Usado',disk.usedGB==null?'Indisponível':fmt(disk.usedGB,2)+' GB')+row('Disponível',disk.availableGB==null?'Indisponível':fmt(disk.availableGB,2)+' GB'))}${box('Interpretação',row('Escopo','Filesystem do Termux')+row('Unidades','GB decimais')+row('Leitura do microSD','Não incluída'))}</div>`;
-    }
-    if(s.page==='system'){
-      html+=groupHead('Disponibilidade das fontes');
-      const availability=Object.entries(d.availability||{}).map(([k,v])=>row(k,v?'Disponível':'Indisponível')).join('');
-      html+=`<div class="detail-grid">${box('Sensores',availability)}${box('Diagnóstico',row('CPU',d.diagnostics?.cpuSource||'Indisponível')+row('Rede',d.diagnostics?.networkSource||'Indisponível')+row('Bateria',d.diagnostics?.batterySource||'Indisponível')+row('Notas','Sem root; indisponível ≠ 0'))}</div>`;
-    }
-    root.innerHTML=html;
-    loadCharts();
+    if(s.page==='battery')html='<div class="stats-grid">'+card('Carga',b.levelPercent,'%',translated(b.status),'battery','violet',b.levelPercent)+card('Temperatura',b.temperatureC,'°C','Sensor da bateria','battery','amber')+card('Tensão',b.voltageMV,'mV','Reportada pelo serviço Android','battery','blue')+'</div>'+group('Estado de energia',`<div class="detail-grid">${box('Bateria',row('Estado',translated(b.status))+row('Alimentação',translated(b.plugged))+row('Saúde informada',translated(b.health)))}${box('Origem e interpretação',row('Fonte',b.source||'Sem dados')+row('Corrente / potência','Sem fonte validada')+row('Estimativa de autonomia','Não calculada'))}</div>`);
+    if(s.page==='network')html='<div class="stats-grid">'+card('Recebimento',n.rxMbps,'Mb/s','Tráfego observado','network','blue')+card('Envio',n.txMbps,'Mb/s','Tráfego observado','network','mint')+card('Sinal Wi-Fi',n.signalDbm,'dBm','Potência recebida pelo S23','network','violet')+card('Link RX',n.rxLinkMbps,'Mb/s','Taxa física informada; não é consumo','network','amber')+'</div>'+group('Interface e contadores',`<div class="detail-grid">${box('Wi-Fi',row('Interface',n.interface||'Sem dados')+row('Frequência do canal',val(n.frequencyMHz,'MHz',0))+row('Link RX',val(n.rxLinkMbps,'Mb/s'))+row('Link TX',val(n.txLinkMbps,'Mb/s'))+row('Fonte',diag.networkSource||'Sem dados'))}${box('Acumulados da interface',row('Recebidos',val(n.rxBytes==null?null:n.rxBytes/1e9,'GB',3))+row('Enviados',val(n.txBytes==null?null:n.txBytes/1e9,'GB',3))+row('Pacotes RX / TX',`${val(n.rxPackets,'',0)} / ${val(n.txPackets,'',0)}`)+row('Erros RX / TX',`${val(n.rxErrors,'',0)} / ${val(n.txErrors,'',0)}`)+row('Descartes RX / TX',`${val(n.rxDrops,'',0)} / ${val(n.txDrops,'',0)}`))}</div>`,'Acumulados desde a criação/reset da interface. Não representam um período do gráfico.');
+    if(s.page==='storage')html='<div class="stats-grid">'+card('Ocupação',disk.usedPercent,'%','Volume acessível pelo Termux','storage','mint',disk.usedPercent)+card('Utilizado',disk.usedGB,'GB','Decimal · 1 GB = 10⁹ bytes','storage','violet')+card('Disponível',disk.availableGB,'GB','Espaço disponível ao usuário','storage','blue')+card('Capacidade',disk.totalGB,'GB','Volume completo, incluindo Android','storage','amber')+'</div>'+group('Escopo do armazenamento',`<div class="detail-grid">${box('Volume',row('Nome',disk.label)+row('Escopo','Filesystem do Termux / dados Android')+row('Outros aplicativos','Sem leitura de arquivos pessoais'))}${box('Histórico local',row('Retenção',val(s.catalog?.storage?.retentionDays,'dias',0))+row('Snapshots completos',val(s.catalog?.storage?.snapshots,'',0))+row('Formato','SQLite local; agregados preservam os extremos'))}</div>`);
+    if(s.page==='system')html='<div class="stats-grid">'+card('CPU do coletor',mon.cpuPercent,'%','100% equivale a um núcleo','system','mint')+card('RAM do coletor',mon.rssMB,'MiB','Memória residente atual','system','blue')+card('Tempo de coleta',mon.collectionMs,'ms','Antes da gravação no SQLite','system','violet')+'</div>'+group('Dispositivo e coleta',`<div class="detail-grid">${box('Identificação',row('Modelo',d.device.model)+row('Sistema',d.device.os)+row('Arquitetura',d.device.architecture)+row('Tempo ligado',duration(d.device.uptimeSec))+row('SSH · porta 8022',d.services?.[0]?.status||'Sem dados'))}${box('Fontes e atualização',row('CPU',diag.cpuSource||'Sem dados')+row('Rede',diag.networkSource||'Sem dados')+row('Bateria',diag.batterySource||'Sem dados')+row('Idade da amostra ADB',val(diag.agentAgeSeconds,'s'))+row('Janela de CPU',val(diag.cpuWindowSec,'s',2))+row('Erro do coletor',diag.lastError||'Nenhum informado'))}${box('Persistência',row('Snapshots completos',val(s.catalog?.storage?.snapshots,'',0))+row('Retenção',val(s.catalog?.storage?.retentionDays,'dias',0))+row('Primeiro snapshot completo',s.catalog?.storage?.firstSample?date(s.catalog.storage.firstSample*1000):'Sem dados'))}${box('Limites das fontes',row('Agente ADB','Expira após 150 s; reiniciar após reboot do Android')+row('Temperatura da CPU','Não homologada')+row('Corrente / saúde física','Sem medição validada')+row('Dados pessoais','Sem contatos, localização ou conteúdo de arquivos'))}</div>`);
+    return html;
   }
-  function renderChart(metric, points){
-    const parent=$('#plot-'+metric), last=$('#last-'+metric);if(!parent||!last)return;
-    const vals=points.filter(p=>typeof p.value==='number' && Number.isFinite(p.value) && Number.isFinite(p.time));
-    last.textContent=vals.length?`${fmt(vals[vals.length-1].value,2)} ${units[metric]}`:'—';
-    if(!vals.length){parent.innerHTML='<div class="chart-empty">Sem amostras para este período</div>';return;}
-    const W=600,H=185,L=38,R=12,T=15,B=29;
-    const bottom=H-B,plotH=bottom-T,plotW=W-L-R;
-    const times=vals.map(p=>p.time),v=vals.map(p=>p.value);
-    let min=Math.min(...v),max=Math.max(...v);
-    if(min===max){min-=Math.max(1,Math.abs(min)*.04);max+=Math.max(1,Math.abs(max)*.04);}
-    const pad=(max-min)*.12;min-=pad;max+=pad;
-    const domainStart=Date.now()-({ '1h':3600,'6h':21600,'12h':43200,'24h':86400,'7d':604800,'30d':2592000,'90d':7776000}[s.range])*1000;
-    const domainEnd=Date.now();
-    const x=t=>L+(Math.max(domainStart,Math.min(domainEnd,t))-domainStart)/(domainEnd-domainStart)*plotW;
-    const y=n=>T+(max-n)/(max-min)*plotH;
-    const expected=(domainEnd-domainStart)/240;
-    const segments=[];let segment=[];
-    vals.forEach((p,i)=>{if(i&&p.time-vals[i-1].time>Math.max(90000,expected*5)){if(segment.length)segments.push(segment);segment=[];}segment.push(p);});
-    if(segment.length)segments.push(segment);
-    let paths=segments.map(seg=>'<path class="line" d="'+seg.map((p,i)=>(i?'L':'M')+x(p.time).toFixed(2)+' '+y(p.value).toFixed(2)).join(' ')+'"/>').join('');
-    const lines=[0,.5,1].map(z=>{const yy=T+z*plotH;return `<line class="gridline" x1="${L}" y1="${yy}" x2="${W-R}" y2="${yy}"/><text class="axis" x="${L-5}" y="${yy+3}" text-anchor="end">${fmt(max-z*(max-min),1)}</text>`}).join('');
-    const timeLabel=(t)=>new Date(t).toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'});
-    parent.innerHTML=`<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Histórico ${esc(labels[metric])}, ${vals.length} amostras agregadas">${lines}${paths}<text class="axis" x="${L}" y="${H-7}">${timeLabel(domainStart)}</text><text class="axis" x="${W-R}" y="${H-7}" text-anchor="end">${timeLabel(domainEnd)}</text></svg>`;
+  function explorerRows() {
+    const defs=Object.entries(s.catalog?.metrics||{});
+    const filtered=defs.filter(([key,d])=>(s.group==='all'||d.group===s.group)&&`${key} ${d.label} ${d.source}`.toLocaleLowerCase('pt-BR').includes(s.query.toLocaleLowerCase('pt-BR')));
+    const node=$('#explorer-body');if(!node)return;
+    node.innerHTML=filtered.slice(0,s.limit).map(([key,d])=>`<tr><td><strong>${esc(d.label)}</strong><small>${esc(key)}</small></td><td class="numeric">${esc(val(d.value,d.unit,d.unit==='Mb/s'?4:1))}</td><td><span class="badge ${d.value==null?'missing':'available'}">${d.value==null?'Sem dados':'Disponível'}</span></td><td>${esc(d.source)}</td></tr>`).join('')||'<tr><td colspan="4">Nenhuma leitura encontrada.</td></tr>';
+    $('#explorer-count').textContent=`${Math.min(s.limit,filtered.length)} de ${filtered.length} leituras · atualização por amostra`;
+    $('#load-more').hidden=s.limit>=filtered.length;
   }
-  async function loadCharts(){
-    const generation=++s.requestId;
-    const requested=s.range;
-    const keys=chartMetricKeys[s.page];
-    await Promise.all(keys.map(async metric=>{
-      const key=metric+':'+requested;
-      const cached=s.history.get(key);
-      if(cached&&Date.now()-cached.ts<60000){if(generation===s.requestId)renderChart(metric,cached.points);return;}
-      try{
-        const res=await fetch(`/api/host/history?metric=${encodeURIComponent(metric)}&range=${encodeURIComponent(requested)}`,{cache:'no-store'});
-        if(!res.ok)throw new Error('HTTP '+res.status);
-        const data=await res.json();
-        if(!Array.isArray(data.points))throw new Error('Histórico inválido');
-        s.history.set(key,{ts:Date.now(),points:data.points});
-        if(s.history.size>30)s.history.delete(s.history.keys().next().value);
-        if(generation===s.requestId)renderChart(metric,data.points);
-      }catch{
-        const target=$('#plot-'+metric);
-        if(generation===s.requestId&&target)target.innerHTML='<div class="chart-empty">Erro ao carregar histórico</div>';
-      }
+  function chartShell() {
+    if(!metrics[s.page].length)return '';
+    return `<div class="section-title"><h2>Histórico de métricas</h2><div class="range-picker" aria-label="Período do histórico">${Object.keys(ranges).map(r=>`<button type="button" data-range="${r}" aria-pressed="${r===s.range}">${r}</button>`).join('')}</div></div><div class="chart-toolbar"><span>Linha: média · faixa: mínimo e máximo · lacunas preservadas</span><label><input id="fit-samples" type="checkbox" ${s.fit?'checked':''}> Ajustar às amostras disponíveis</label></div><div class="chart-grid">${metrics[s.page].map(key=>`<article class="card chart-card" data-metric="${key}"><div class="chart-head"><div><h3>${esc(labels[key])}</h3><p class="chart-period">${s.range} · ${s.fit?'janela das amostras':'período completo'}</p></div><button class="text-button" type="button" disabled data-csv="${key}" aria-label="Exportar CSV agregado de ${esc(labels[key])}">↓ CSV</button></div><div class="chart" id="plot-${key}" aria-busy="true"><div class="chart-skeleton" role="status"><span class="skeleton-axis"></span><span class="skeleton-line"></span><span class="skeleton-bar"></span><b>Carregando histórico…</b></div></div><div class="chart-stats" id="stats-${key}"></div><div class="history-message" id="message-${key}" role="status"></div></article>`).join('')}</div>`;
+  }
+  function explorerShell() {
+    return `<div class="card explorer-toolbar"><label>Buscar leitura<input id="reading-search" type="search" placeholder="CPU, memória, fonte…" value="${esc(s.query)}"></label><label>Grupo<select id="reading-group"><option value="all">Todos os grupos</option>${[...new Set(Object.values(s.catalog?.metrics||{}).map(d=>d.group))].map(g=>`<option ${s.group===g?'selected':''}>${esc(g)}</option>`).join('')}</select></label><span id="explorer-count"></span></div><div class="card table-wrap"><table><caption class="sr-only">Catálogo de métricas e fontes do S23</caption><thead><tr><th>Leitura</th><th>Valor atual</th><th>Estado</th><th>Fonte / interpretação</th></tr></thead><tbody id="explorer-body"></tbody></table><button id="load-more" type="button" class="button">Carregar mais</button></div>`;
+  }
+  function mount() {
+    window.S23Charts.destroy($('#content-region'));
+    s.generation++;
+    for(const [key,f] of flights)if(!metrics[s.page].some(m=>key===`${m}:${s.range}`)){f.controller.abort();flights.delete(key);}
+    $('#content-region').innerHTML=s.page==='explorer'?explorerShell():`<div id="snapshot-region">${snapshotView()}</div><div id="charts-region">${chartShell()}</div>`;
+    $('#content-region').classList.remove('page-enter');
+    requestAnimationFrame(()=>$('#content-region').classList.add('page-enter'));
+    explorerRows();loadCharts();
+  }
+  function drawHistory(key,data,old=false) {
+    const host=$('#plot-'+key);if(!host)return;
+    if(host.dataset.version===`${s.range}:${s.fit}:${data.version}`){if(old)$('#message-'+key).textContent='Histórico anterior desta faixa; falha ao atualizar.';return;}
+    if(host.contains(document.activeElement))return;
+    host.dataset.version=`${s.range}:${s.fit}:${data.version}`;host.setAttribute('aria-busy','false');
+    window.S23Charts.draw(host,data,{label:labels[key],unit:units[key],start:Date.now()-ranges[s.range]*1000,end:Date.now(),fit:s.fit,percent:['cpu','memory','battery','storage'].includes(key),interval:data.sampleIntervalSec||30});
+    host.closest('.chart-card').querySelector('[data-csv]').disabled=!data.points.length;
+    const q=data.summary||{};
+    $('#stats-'+key).innerHTML=[['Mínimo',q.min],['Média',q.mean],['Máximo',q.max]].map(([name,v])=>`<span>${name}<strong>${esc(val(v,units[key],2))}</strong></span>`).join('')+`<span>Amostras<strong>${q.count??0}</strong></span>`;
+    $('#message-'+key).textContent=old?'Histórico anterior desta faixa; falha ao atualizar.':q.count?`${date(q.firstTime)} → ${date(q.lastTime)}`:'Sem amostras para este período.';
+  }
+  async function history(key) {
+    const id=`${key}:${s.range}`,cached=cache.get(id);
+    if(cached&&Date.now()-cached.saved<30000)return cached.data;
+    if(flights.has(id))return flights.get(id).promise;
+    const chart=$('#plot-'+key)?.closest('.chart-card');
+    chart?.classList.add('is-loading');
+    const controller=new AbortController();
+    const promise=(async()=>{
+      const r=await fetch(`/s23/api/host/history?metric=${encodeURIComponent(key)}&range=${encodeURIComponent(s.range)}`,{cache:'no-store',signal:controller.signal});
+      if(!r.ok)throw new Error('Histórico indisponível');
+      const data=await r.json();if(!Array.isArray(data.points))throw new Error('Histórico inválido');
+      data.version=Date.now();cache.set(id,{saved:Date.now(),data});
+      while(cache.size>28)cache.delete(cache.keys().next().value);
+      return data;
+    })().finally(()=>{if(flights.get(id)?.controller===controller)flights.delete(id);chart?.classList.remove('is-loading');});
+    flights.set(id,{controller,promise});return promise;
+  }
+  async function loadCharts() {
+    if(s.paused||document.hidden)return;
+    const generation=s.generation,range=s.range;
+    await Promise.all(metrics[s.page].map(async key=>{
+      try {const data=await history(key);if(generation===s.generation&&range===s.range)drawHistory(key,data);}
+      catch(error){if(error.name==='AbortError'||generation!==s.generation)return;
+        const old=cache.get(`${key}:${range}`);if(old)drawHistory(key,old.data,true);
+        else {const node=$('#plot-'+key);if(node){node.setAttribute('aria-busy','false');node.innerHTML='<div class="chart-empty">Histórico indisponível. Use Atualizar para tentar novamente.</div>';}}}
     }));
   }
-  function statusInfo(){
-    const stamp=s.snapshot?.timestamp?new Date(s.snapshot.timestamp).getTime():NaN;
-    const age=Date.now()-stamp;
-    const fresh=Number.isFinite(age)&&age>=-20000&&age<120000;
-    const live=$('#live-state'),dot=$('#sidebar-dot');
-    live.classList.toggle('ok',fresh); dot.parentElement.classList.toggle('ok',fresh);
-    live.innerHTML=`<span class="dot"></span> ${fresh?'DADOS REAIS':s.snapshot?'DADOS ANTIGOS':'AGUARDANDO'}`;
-    $('#sidebar-label').textContent=fresh?'Coletor ativo':s.snapshot?'Telemetria antiga':'Aguardando telemetria';
-    $('#updated').textContent=s.snapshot?'Última amostra: '+dateFmt(s.snapshot.timestamp):'Sem leituras recebidas';
-    const warning=$('#warning');
-    warning.hidden=fresh&&!s.lastError;
-    warning.textContent=s.lastError?'Não foi possível atualizar. Confira o serviço no Termux.':(!fresh&&s.snapshot?'A última amostra está antiga. Verifique o coletor e as restrições de bateria.':'');
-    if(!s.snapshot&&!s.lastError)warning.hidden=true;
+  function status() {
+    const age=s.snapshot?Math.max(0,(Date.now()-Date.parse(s.snapshot.timestamp))/1000):null;
+    const fresh=age!=null&&age<Math.max(75,(s.snapshot?.diagnostics?.sampleIntervalSec||30)*2.5)&&!s.error;
+    $('#live-state').classList.toggle('ok',fresh&&!s.paused);
+    $('#live-state').innerHTML=`<span class="dot"></span>${s.paused?'VISUALIZAÇÃO PAUSADA':fresh?'DADOS REAIS':s.snapshot?'DADOS ANTIGOS':'AGUARDANDO'}`;
+    $('#sidebar-dot').parentElement.classList.toggle('ok',fresh);
+    $('#sidebar-label').textContent=s.paused?'Visualização pausada':fresh?'Coletor ativo':'Verificar conexão';
+    $('#sample-note').textContent=s.snapshot?`Amostra há ${fmt(age,0)} s · coleta a cada ${s.snapshot.diagnostics?.sampleIntervalSec||30} s`:'Coleta local · sem root';
+    $('#updated').textContent=s.snapshot?'Última amostra: '+date(s.snapshot.timestamp):'Sem amostras recebidas';
+    const warning=$('#warning');warning.hidden=!s.error&&(fresh||!s.snapshot)&&!s.paused;
+    warning.textContent=s.paused?'Somente a visualização está pausada. O dispositivo continua coletando e gravando.':s.error?'Falha ao atualizar. A última leitura recebida foi preservada e pode estar antiga.':'A coleta está desatualizada. Confira o serviço e o agente Android.';
   }
-  async function refresh(){
-    try{
-      const res=await fetch('/api/host/snapshot',{cache:'no-store'});
-      if(!res.ok)throw new Error('HTTP '+res.status);
-      const data=await res.json();
-      if(data?.source!=='live'||!data.timestamp)throw new Error('Dados inválidos');
-      const changed=!s.snapshot||s.snapshot.timestamp!==data.timestamp;
-      s.snapshot=data;s.lastError=null;
-      if(changed)render();
-    }catch(e){s.lastError=String(e);if(!s.snapshot)$('#content-region').innerHTML='<div class="empty">Sem conexão com o coletor. Confira o comando de inicialização no Termux.</div>';}
-    statusInfo();
+  async function refresh(force=false) {
+    if(refreshing||(s.paused&&!force))return;refreshing=true;
+    $('#refresh').classList.add('is-refreshing');$('#refresh').setAttribute('aria-busy','true');$('#refresh').disabled=true;
+    try {
+      const r=await fetch('/s23/api/host/snapshot',{cache:'no-store'});if(!r.ok)throw new Error('Snapshot indisponível');
+      const d=await r.json();if(d.source!=='live'||!d.timestamp)throw new Error('Amostra inválida');
+      const changed=d.timestamp!==s.snapshot?.timestamp;s.snapshot=d;s.error=null;
+      if(changed||!s.catalog) {
+        try {const catalogResponse=await fetch('/s23/api/host/catalog',{cache:'no-store'});if(catalogResponse.ok)s.catalog=await catalogResponse.json();}catch{}
+        if($('#snapshot-region'))$('#snapshot-region').innerHTML=snapshotView();
+        if(s.page==='explorer'){if(!$('#reading-group')?.options.length||$('#reading-group').options.length===1)mount();else explorerRows();}
+      }
+      await loadCharts();
+    }catch(e){s.error=e.message;}finally{refreshing=false;$('#refresh').classList.remove('is-refreshing');$('#refresh').setAttribute('aria-busy','false');$('#refresh').disabled=false;status();}
   }
-  $('#nav').addEventListener('click',ev=>{
-    const button=ev.target.closest('button[data-page]');if(!button)return;
-    s.page=button.dataset.page;$('#nav').querySelectorAll('button').forEach(b=>b.classList.toggle('active',b===button));
-    $('#page-title').textContent=title[s.page];$('#crumb-page').textContent=title[s.page];$('#page-description').textContent=description[s.page];
-    render();
+  function navigate(page) {
+    if(!pages[page])page='overview';s.page=page;
+    $('#page-title').textContent=pages[page][0];$('#page-description').textContent=pages[page][1];$('#crumb-page').textContent=pages[page][0];
+    $('#nav').querySelectorAll('[data-page]').forEach(b=>{b.classList.toggle('active',b.dataset.page===page);b.setAttribute('aria-current',b.dataset.page===page?'page':'false');});
+    historyState(page);mount();
+  }
+  function historyState(page){try{window.history.replaceState(null,'','#'+page);}catch{}}
+  function download(name,data,type){const url=URL.createObjectURL(new Blob([data],{type}));const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
+  $('#nav').addEventListener('click',event=>{const b=event.target.closest('[data-page]');if(b)navigate(b.dataset.page);});
+  $('#content-region').addEventListener('click',event=>{
+    const card=event.target.closest('[data-goto]');if(card&&card.dataset.goto!==s.page){navigate(card.dataset.goto);return;}
+    const range=event.target.closest('[data-range]');if(range){s.range=range.dataset.range;save('range',s.range);mount();$('#content-region [data-range="'+s.range+'"]').focus();return;}
+    const csv=event.target.closest('[data-csv]');if(csv){const data=cache.get(`${csv.dataset.csv}:${s.range}`)?.data;if(!data)return;const header='timestamp_iso,mean,min,max,sample_count,unit\n';const rows=data.points.map(p=>[new Date(p.time).toISOString(),p.value,p.min,p.max,p.count,units[csv.dataset.csv]].join(','));download(`s23-${csv.dataset.csv}-${s.range}.csv`,header+rows.join('\n'),'text/csv;charset=utf-8');}
+    if(event.target.id==='load-more'){s.limit+=24;explorerRows();}
   });
-  $('#content-region').addEventListener('click',ev=>{
-    const b=ev.target.closest('button[data-range]');if(!b)return;
-    if(!ranges.includes(b.dataset.range))return;
-    s.range=b.dataset.range;try{localStorage.setItem('s23_range',s.range);}catch{}render();
+  $('#content-region').addEventListener('input',event=>{if(event.target.id==='reading-search'){s.query=event.target.value;s.limit=24;explorerRows();}});
+  $('#content-region').addEventListener('change',event=>{
+    if(event.target.id==='reading-group'){s.group=event.target.value;s.limit=24;explorerRows();}
+    if(event.target.id==='fit-samples'){s.fit=event.target.checked;save('fit',String(s.fit));for(const key of metrics[s.page]){const cached=cache.get(`${key}:${s.range}`);if(cached)drawHistory(key,cached.data);}document.querySelectorAll('.chart-period').forEach(p=>{p.textContent=`${s.range} · ${s.fit?'janela das amostras':'período completo'}`;});}
   });
-  $('#refresh').addEventListener('click',()=>{s.history.clear();refresh();if(s.snapshot)loadCharts();});
-  $('#theme-button').addEventListener('click',()=>{document.body.classList.toggle('light');try{localStorage.setItem('s23_theme',document.body.classList.contains('light')?'light':'dark');}catch{}});
-  function clock(){ $('#clock').textContent=new Date().toLocaleTimeString('pt-BR');statusInfo(); }
-  setInterval(clock,1000);setInterval(()=>{if(!document.hidden)refresh();},15000);
-  document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh();});
-  clock();refresh();
+  $('#refresh').addEventListener('click',()=>{cache.clear();refresh(true);});
+  $('#pause').addEventListener('click',()=>{s.paused=!s.paused;$('#pause').textContent=s.paused?'Retomar':'Pausar';$('#pause').setAttribute('aria-pressed',String(s.paused));if(!s.paused)refresh();status();});
+  $('#export').addEventListener('click',()=>{if(s.snapshot)download('s23-amostra.json',JSON.stringify(s.snapshot,null,2),'application/json');});
+  $('#theme-button').addEventListener('click',()=>{document.body.classList.toggle('light');save('theme',document.body.classList.contains('light')?'light':'dark');});
+  const picker=$('.project-switch');document.addEventListener('pointerdown',event=>{if(!picker.contains(event.target))picker.open=false;});picker.addEventListener('keydown',event=>{if(event.key==='Escape'){picker.open=false;picker.querySelector('summary').focus();}});
+  document.addEventListener('visibilitychange',()=>{document.body.classList.toggle('motion-suspended',document.hidden);if(!document.hidden&&!s.paused)refresh();});
+  window.addEventListener('hashchange',()=>navigate(location.hash.slice(1)));
+  setInterval(()=>{if(!document.hidden&&!s.paused)refresh();},15000);
+  setInterval(()=>{$('#clock').textContent=new Date().toLocaleTimeString('pt-BR');status();},1000);
+  navigate(location.hash.slice(1));refresh();
 })();

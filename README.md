@@ -2,11 +2,11 @@
 
 Observatório **local-first** para um **Samsung Galaxy S23+** com Android/Termux, criado como projeto independente e inspirado no [S7 Edge Observatory](https://github.com/Faysk/s7-edge-observatory). Interface web responsiva em português, backend Python (somente biblioteca padrão) e histórico SQLite com retenção de 90 dias.
 
-> **Status: v0.1, base funcional/testada em Linux.** Os sensores exatos do S23+ ainda precisam de homologação no próprio aparelho. Nenhum número fictício é exibido como telemetria real.
+> **Status: v0.2, validado no SM-S916B / Android 17.** CPU, RAM, bateria, temperatura da bateria, rede e armazenamento têm fontes reais homologadas. Temperatura da CPU e corrente da bateria continuam sem fonte validada.
 
 ## Recursos
 
-- API `GET /api/host/snapshot`, `GET /api/host/history`, `GET /api/host/catalog` e `GET /api/health`.
+- API `GET /s23/api/host/snapshot`, `GET /s23/api/host/history`, `GET /s23/api/host/catalog` e `GET /s23/api/health`.
 - CPU global e por núcleo via `/proc/stat`, **quando o Android permitir**. Primeira amostra não dispõe de delta de CPU.
 - Memória via `/proc/meminfo`; `used = total - MemAvailable` (não equivale à soma dos processos).
 - Bateria via Termux:API (opcional); fallback por sysfs se acessível. Temperatura exibida é **da bateria**, nunca atribuída à CPU.
@@ -34,7 +34,7 @@ bash scripts/install.sh
 bash scripts/start.sh
 ```
 
-A aplicação inicia em `http://127.0.0.1:8783` **dentro do celular**. Deixe esse terminal aberto enquanto executa em primeiro plano. Outra opção:
+A aplicação inicia em `http://127.0.0.1:8783/s23/` **dentro do celular**. Deixe esse terminal aberto enquanto executa em primeiro plano. Outra opção:
 
 ```bash
 # Após Ctrl+C, iniciar em segundo plano:
@@ -52,7 +52,7 @@ Use o arquivo `Conectar-Painel-S23.cmd`, ou o comando:
 ssh -p 8022 -N -o ExitOnForwardFailure=yes -L 8783:127.0.0.1:8783 u0_aXXX@192.0.2.10
 ```
 
-**Deixe a janela SSH aberta** e acesse **http://127.0.0.1:8783** no navegador do PC. O link local só é acessível enquanto o SSH tunnel estiver ativo. Não precisa abrir portas no roteador.
+**Deixe a janela SSH aberta** e acesse **http://127.0.0.1:8783/s23/** no navegador do PC. O link local só é acessível enquanto o SSH tunnel estiver ativo. Não precisa abrir portas no roteador.
 
 ## 3. Bateria (opcional, para mais leituras)
 
@@ -124,3 +124,53 @@ bash scripts/probe-sensors.sh
 ```
 
 O resultado lista somente capacidades, dados brutos selecionados de CPU/bateria e nomes de zonas térmicas; **não** recolhe localização, SSID, IP, MAC, IMEI ou série. Envie o resultado para decidir com segurança quais sensores adicionais podem ser incorporados. A leitura de CPU/GPU, frequências e térmicos de chipset exige validação específica; não se deve atribuir um `thermal_zone` aleatório à CPU.
+
+## Homologação no Galaxy S23+ — 01/11/2026
+
+O painel e a API ficam em `/s23/` e `/s23/api/`; a raiz redireciona para `/s23/`.
+No Android 17, o usuário do Termux não lê `/proc/stat`, `/proc/net/dev` e `/proc/uptime`.
+O S7 usa um agente shell iniciado por ADB para complementar o Termux. O S23 agora
+oferece a mesma abordagem, sem root: CPU global e por núcleo em janela de aproximadamente
+1 segundo, rede por diferenças dos contadores e bateria pelo serviço Android (`dumpsys battery`).
+As frequências cpufreq e o uptime CLOCK_BOOTTIME são lidos diretamente pelo Termux.
+Temperatura da CPU continua indisponível: as zonas térmicas não foram homologadas.
+
+Com a depuração USB já autorizada, inicie o agente a partir do PC:
+
+```powershell
+adb push scripts/s23-android-agent.sh /data/local/tmp/s23-android-agent.sh
+adb shell sh /data/local/tmp/s23-android-agent.sh --start
+```
+
+Se houver vários aparelhos conectados, use `adb -s ID_DO_S23` nos dois comandos.
+O Termux precisa acessar `/sdcard/Download/s23-observatory-agent`.
+O agente continua após desconectar o PC, mas precisa ser iniciado novamente por ADB após
+reiniciar o Android. Não promete autoexecução no boot. Amostras têm nonce por sessão,
+limite de 32 KiB e expiram após 150 segundos. Se o agente parar, os valores ficam nulos.
+Os arquivos compartilhados são telemetria local; nunca são executados como comandos.
+
+A coleta real de CPU, oito núcleos, bateria, temperatura da bateria e taxas Wi-Fi foi
+confirmada no SM-S916B. Histórico antigo sem esses sensores permanece sem valores.
+
+## v0.2 — visualização e histórico completos
+
+- Workspace com Router, S7, Vault, S23 e Acer; navegação explícita, sem consultas cruzadas.
+- Catálogo com 29 métricas, busca e filtro por grupo. Valores nulos não viram zeros.
+- CPU por núcleo, frequências, carga média, RAM/cache/slab/swap, energia, RSSI e taxas
+  físicas do Wi-Fi separadas do tráfego, contadores e consumo do próprio coletor.
+- Gráficos com cursor e teclado, ajuste à janela de amostras, médias, mínimos/máximos
+  originais e lacunas. Estatísticas consultam os valores originais, sem média de médias.
+- Exportação de CSV agregado por gráfico e JSON da amostra atual.
+- Snapshots completos passam a ser persistidos a partir desta versão, com retenção
+  de 90 dias. O histórico anterior de métricas permanece; não é possível reconstruir
+  snapshots anteriores que não foram guardados.
+- `GET /s23/api/host/archive?after=0&limit=50`: paginação dos snapshots (máximo 100).
+- Histórico retorna `summary`, extremos e contagem por bucket, horários reais e maior
+  intervalo entre amostras; API e HTML ficam sem cache persistente de dados privados.
+- Pausar suspende a visualização, não a coleta no dispositivo. Abas ocultas suspendem
+  consultas da interface. Falhas preservam a amostra anterior com aviso de atualização.
+
+Implementação original inspirada na organização dos projetos do proprietário:
+[S7](https://github.com/Faysk/s7-edge-observatory),
+[Acer](https://github.com/Faysk/acer-monitor) e
+[Network Observatory](https://github.com/Faysk/network-observatory).

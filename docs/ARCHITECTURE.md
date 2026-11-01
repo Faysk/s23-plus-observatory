@@ -15,15 +15,15 @@ S23+ / Termux
                    │
               túnel SSH:8022
                    ▼
-        Navegador no Windows: http://127.0.0.1:8783
+        Navegador no Windows: http://127.0.0.1:8783/s23/
 ```
 
 ## API
 
-- `GET /api/health`: `{ok,lastSample,lastErrorType}`; código 503 se ainda não coletou ou está parado.
-- `GET /api/host/snapshot`: `source:"live"`, `timestamp` ISO 8601 UTC, `device`, `cpu`, `memory`, `battery`, `network`, `storage`, `services`, `availability`, `diagnostics`. Dados ausentes aparecem como JSON `null`.
-- `GET /api/host/catalog`: métricas e intervalos suportados.
-- `GET /api/host/history?metric=cpu&range=24h`: `{metric,range,points:[{time:epochMilliseconds,value:number}]}`.
+- `GET /s23/api/health`: `{ok,lastSample,lastErrorType}`; código 503 se ainda não coletou ou está parado.
+- `GET /s23/api/host/snapshot`: `source:"live"`, `timestamp` ISO 8601 UTC, `device`, `cpu`, `memory`, `battery`, `network`, `storage`, `services`, `availability`, `diagnostics`. Dados ausentes aparecem como JSON `null`.
+- `GET /s23/api/host/catalog`: métricas e intervalos suportados.
+- `GET /s23/api/host/history?metric=cpu&range=24h`: `{metric,range,points:[{time:epochMilliseconds,value:number}]}`.
 
 Métricas (`value` para histórico):
 
